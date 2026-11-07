@@ -1,0 +1,335 @@
+{
+  "batchVersion": "1.0",
+  "boardId": "b_04gydtUL-qDZ",
+  "baseContentVersion": 0,
+  "actor": "agent",
+  "label": "绘制酒馆世界引擎架构",
+  "ops": [
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_board_title",
+        "type": "text",
+        "x": 350,
+        "y": 0,
+        "w": 600,
+        "accent": "blue",
+        "markdown": "# Living World Engine\n酒馆世界引擎 · 架构草案"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_character",
+        "type": "text",
+        "x": 0,
+        "y": 125,
+        "w": 244,
+        "accent": "default",
+        "markdown": "**角色引擎**\n性格、动机与角色状态"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_relations",
+        "type": "text",
+        "x": 350,
+        "y": 125,
+        "w": 244,
+        "accent": "default",
+        "markdown": "**关系引擎**\n关系、信任与共同经历"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_memory",
+        "type": "text",
+        "x": 700,
+        "y": 125,
+        "w": 244,
+        "accent": "default",
+        "markdown": "**记忆引擎**\n谁知道什么、如何获知"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_narrative",
+        "type": "text",
+        "x": 1050,
+        "y": 125,
+        "w": 244,
+        "accent": "default",
+        "markdown": "**叙事引擎**\n场景、剧情线与节奏\n主动长线策划：后续"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_tavern_input",
+        "type": "text",
+        "x": 0,
+        "y": 360,
+        "w": 244,
+        "accent": "blue",
+        "markdown": "**① 酒馆 · 玩家**\n行动、对话与决策",
+        "shape": "rectangle"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_orchestrator",
+        "type": "text",
+        "x": 470,
+        "y": 360,
+        "w": 324,
+        "accent": "blue",
+        "markdown": "**② 编排器**\n恢复当前历史对应的状态\n汇总事实、角色所知与必要约束",
+        "shape": "rectangle"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_director",
+        "type": "text",
+        "x": 1010,
+        "y": 360,
+        "w": 284,
+        "accent": "blue",
+        "markdown": "**③ 前台大编导**\n同一模型，区分编剧与导演\n在事实约束内创作并输出正文",
+        "shape": "rectangle"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_branch_store",
+        "type": "text",
+        "x": 0,
+        "y": 633,
+        "w": 244,
+        "accent": "green",
+        "markdown": "**⑥ 当前分支存档**\n时间、位置、事件与记忆\n保存来源与历史快照",
+        "shape": "rectangle"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_world_engine",
+        "type": "text",
+        "x": 470,
+        "y": 633,
+        "w": 324,
+        "accent": "amber",
+        "markdown": "**⑤ 世界引擎**\n维护统一事实，校验并保存\n最少约束：硬设定、余额等\n明确启用的规则才需要裁决",
+        "shape": "rectangle"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_recorder",
+        "type": "text",
+        "x": 1010,
+        "y": 633,
+        "w": 284,
+        "accent": "default",
+        "markdown": "**④ 状态记录员**\n读取玩家输入和正文\n提取状态、获知途径与耗时",
+        "shape": "rectangle"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_chat_history",
+        "type": "text",
+        "x": 0,
+        "y": 923,
+        "w": 244,
+        "accent": "default",
+        "markdown": "**酒馆历史变更**\n重答、切换候选、截断删楼\n中间删楼提示需要重建"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_backstage",
+        "type": "text",
+        "x": 470,
+        "y": 923,
+        "w": 324,
+        "accent": "default",
+        "markdown": "**后续 · 幕后小编剧**\n低精度演化离场角色与世界\n提出事件，沿用统一事实"
+      }
+    },
+    {
+      "op": "addNode",
+      "node": {
+        "id": "n_phase_check",
+        "type": "text",
+        "x": 1010,
+        "y": 923,
+        "w": 284,
+        "accent": "default",
+        "markdown": "**首期验收**\n事实与实际注入内容可查\n时空连续 · 角色记忆不串"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_input_orch",
+        "kind": "association",
+        "from": "n_tavern_input",
+        "to": "n_orchestrator",
+        "directed": true,
+        "stroke": "solid",
+        "label": "本轮输入"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_orch_director",
+        "kind": "association",
+        "from": "n_orchestrator",
+        "to": "n_director",
+        "directed": true,
+        "stroke": "solid",
+        "label": "本轮上下文"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_director_rec",
+        "kind": "association",
+        "from": "n_director",
+        "to": "n_recorder",
+        "directed": true,
+        "stroke": "solid",
+        "label": "玩家输入与正文"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_rec_world",
+        "kind": "association",
+        "from": "n_recorder",
+        "to": "n_world_engine",
+        "directed": true,
+        "stroke": "solid",
+        "label": "变更提案"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_world_store",
+        "kind": "association",
+        "from": "n_world_engine",
+        "to": "n_branch_store",
+        "directed": true,
+        "stroke": "solid",
+        "label": "确认后保存"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_store_orch",
+        "kind": "association",
+        "from": "n_branch_store",
+        "to": "n_orchestrator",
+        "directed": true,
+        "stroke": "solid",
+        "label": "已确认事实"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_world_orch",
+        "kind": "association",
+        "from": "n_world_engine",
+        "to": "n_orchestrator",
+        "directed": true,
+        "stroke": "solid",
+        "label": "最少约束"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_history_store",
+        "kind": "association",
+        "from": "n_chat_history",
+        "to": "n_branch_store",
+        "directed": true,
+        "stroke": "solid",
+        "label": "恢复对应状态"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_back_world",
+        "kind": "association",
+        "from": "n_backstage",
+        "to": "n_world_engine",
+        "directed": true,
+        "stroke": "dashed",
+        "label": "幕后事件提案"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_char_orch",
+        "kind": "association",
+        "from": "n_character",
+        "to": "n_orchestrator",
+        "directed": true,
+        "stroke": "dashed"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_rel_orch",
+        "kind": "association",
+        "from": "n_relations",
+        "to": "n_orchestrator",
+        "directed": true,
+        "stroke": "dashed"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_mem_orch",
+        "kind": "association",
+        "from": "n_memory",
+        "to": "n_orchestrator",
+        "directed": true,
+        "stroke": "dashed"
+      }
+    },
+    {
+      "op": "addEdge",
+      "edge": {
+        "id": "e_narr_orch",
+        "kind": "association",
+        "from": "n_narrative",
+        "to": "n_orchestrator",
+        "directed": true,
+        "stroke": "dashed"
+      }
+    }
+  ]
+}

@@ -1,0 +1,452 @@
+import { extractTurn } from './recorder.js';
+
+const id = 'living-world-engine';
+const endpoint = '/api/plugins/' + id;
+const marker = '[Living World Engine · 本轮世界资料]';
+const supported = new Set(['normal', 'regenerate', 'swipe', 'continue', 'append', 'appendFinal']);
+const tasks = new Map();
+const audits = new Map();
+const fingerprints = new WeakMap();
+const encoder = new TextEncoder();
+let activeGeneration;
+let panel;
+let refreshCount = 0;
+
+function context() {
+    return globalThis.SillyTavern.getContext();
+}
+
+function scopeOf(ctx) {
+    if (!ctx.chatId) return null;
+    if (ctx.groupId != null) return { owner: 'group:' + ctx.groupId, chat: String(ctx.chatId) };
+    const character = ctx.characters[ctx.characterId];
+    return character?.avatar ? { owner: 'character:' + character.avatar, chat: String(ctx.chatId) } : null;
+}
+
+function keyOf(scope) {
+    return JSON.stringify(scope);
+}
+
+function settings(ctx = context()) {
+    return ctx.extensionSettings[id] ??= { enabled: true, profile: '' };
+}
+
+function enabled(ctx) {
+    return settings(ctx).enabled && !ctx.extensionSettings.disabledExtensions?.includes('third-party/' + id);
+}
+
+function clearPrompt(ctx = context()) {
+    ctx.setExtensionPrompt(id, '', -1, 1);
+}
+
+function messageEntry(message) {
+    if (message?.is_system || typeof message?.mes !== 'string' || !message.mes.trim()
+        || message.mes === '...' || message.mes === '…') return null;
+    const entry = {
+        role: message.is_user ? 'user' : 'assistant',
+        name: String(message.name ?? ''),
+        stamp: String(message.send_date ?? ''),
+        text: message.mes,
+    };
+    const input = JSON.stringify([entry.role, entry.name, entry.stamp, entry.text]);
+    let cached = fingerprints.get(message);
+    if (cached?.input !== input) {
+        const promise = globalThis.crypto.subtle.digest('SHA-256', encoder.encode(input)).then(bytes =>
+            Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join(''));
+        cached = { input, promise };
+        fingerprints.set(message, cached);
+    }
+    return cached.promise.then(hash => ({ ...entry, id: hash }));
+}
+
+async function snapshot(ctx, chat = ctx.chat) {
+    const scope = scopeOf(ctx);
+    if (!scope) return null;
+    if (!globalThis.crypto?.subtle) throw new Error('请通过本机地址或 HTTPS 打开酒馆');
+    const entries = (await Promise.all(chat.map(messageEntry))).filter(Boolean);
+    return {
+        scope, entries, key: keyOf(scope),
+        history: entries.map(({ id, role }) => ({ id, role })),
+        focus: entries.slice(-2).map(entry => entry.text).join('\n').slice(-3000),
+    };
+}
+
+async function request(path, selected, extra = {}) {
+    const response = await fetch(endpoint + path, {
+        method: 'POST',
+        headers: context().getRequestHeaders(),
+        signal: AbortSignal.timeout(15_000),
+        body: JSON.stringify({ scope: selected.scope, history: selected.history, focus: selected.focus, ...extra }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload) {
+        if (response.status === 404) throw new Error('世界引擎服务未加载，请启用服务端插件并重启酒馆');
+        throw new Error(payload?.error ?? '无法连接世界引擎');
+    }
+    return payload;
+}
+
+async function stillSelected(selected) {
+    const ctx = context();
+    if (!enabled(ctx) || keyOf(scopeOf(ctx)) !== selected.key) return false;
+    const latest = await snapshot(ctx);
+    return latest && latest.key === selected.key
+        && latest.history.length >= selected.history.length
+        && selected.history.every((entry, i) => entry.id === latest.history[i]?.id)
+        && latest.history.slice(selected.history.length).every(entry => entry.role === 'user');
+}
+
+function showStatus(message) {
+    if (panel) panel.querySelector('.lwe-status').textContent = message;
+}
+
+function storyTime(minutes) {
+    const hh = String(Math.floor(minutes % 1440 / 60)).padStart(2, '0');
+    const mm = String(minutes % 60).padStart(2, '0');
+    return '第 ' + (Math.floor(minutes / 1440) + 1) + ' 天 ' + hh + ':' + mm;
+}
+
+function stateText(view) {
+    if (!view?.state) return view?.reason ?? '在当前聊天中建立世界起点后，这里会显示存档。';
+    const state = view.state;
+    const lines = [state.time];
+    if (state.clock) {
+        lines.push('上次推进 ' + state.clock.elapsed + ' 分钟' + (state.clock.estimated ? '（估计）' : '')
+            + '。「' + state.clock.evidence + '」');
+    }
+    for (const character of state.characters) {
+        const where = character.travel ? character.travel.from + ' → ' + character.travel.to + '（途中）'
+            : (character.location ?? '位置未确认');
+        lines.push('', character.name + ' · ' + where
+            + (character.coins === null ? '' : ' · ' + character.coins + ' 枚金币'));
+        if (character.condition) lines.push('状态　' + character.condition.note);
+        if (character.items.length) lines.push('物品　' + character.items.map(item => item.name + ' × ' + item.count).join('、'));
+        if (character.debts.length) lines.push('欠款　' + character.debts.map(debt => debt.to + ' ' + debt.coins + ' 枚').join('、'));
+        for (const memory of character.memories.slice(-8)) {
+            const kinds = { initial: '初始', seen: '亲历', heard: '亲耳听到', reported: '听闻', inferred: '推测' };
+            lines.push('记忆　' + memory.content + '（' + kinds[memory.kind] + '，' + memory.via + '）'
+                + '〔' + storyTime(memory.minute) + ' · ' + memory.source + '〕');
+            if (memory.evidence) lines.push('　　「' + memory.evidence + '」');
+        }
+    }
+    if (state.relations.length) {
+        lines.push('', '关系');
+        for (const entry of state.relations.slice(-12)) lines.push(entry.from + ' → ' + entry.to + '　' + entry.note);
+    }
+    if (state.routes.length) {
+        lines.push('', '路线');
+        for (const entry of state.routes.slice(-24)) lines.push(entry.from + ' → ' + entry.to + '　' + entry.mode + ' ' + entry.minutes + ' 分钟');
+    }
+    if (state.events.length) {
+        lines.push('', '近期事件');
+        for (const event of state.events.slice(-12)) {
+            lines.push(storyTime(event.minute) + '　' + event.summary + '〔' + event.source + '〕「' + event.evidence + '」');
+        }
+    }
+    if (view.issues.length) {
+        lines.push('', '待处理的冲突');
+        for (const issue of view.issues) lines.push(issue.detail + (issue.evidence ? '「' + issue.evidence + '」' : ''));
+    }
+    return lines.join('\n');
+}
+
+function draw(view, key) {
+    if (!panel) return;
+    const status = {
+        missing: '当前聊天尚未建立世界起点。',
+        ready: '世界记录与当前聊天一致。',
+        conflict: '正文已显示，受影响的世界变化待处理。',
+        unrecorded: '当前回复尚未完成记录。',
+        rebuild: view?.reason,
+    };
+    showStatus(tasks.has(key) ? '正在提取世界记录…' : (status[view?.status] ?? '请选择一段聊天。'));
+    panel.querySelector('[data-view="state"]').textContent = stateText(view);
+    const audit = audits.get(key);
+    panel.querySelector('[data-view="prompt"]').textContent = audit?.confirmed ? audit.prompt
+        : '本次打开酒馆后，当前聊天还没有确认注入的世界上下文。';
+    const seed = panel.querySelector('[data-part="seed"]');
+    seed.hidden = !view || !['missing', 'rebuild'].includes(view.status);
+    const create = seed.querySelector('[data-act="seed"]');
+    create.dataset.rebuild = String(view?.status === 'rebuild');
+    create.textContent = view?.status === 'rebuild' ? '以当前聊天重建起点' : '建立世界起点';
+    const retry = panel.querySelector('[data-act="retry"]');
+    retry.hidden = !view?.canRecord;
+    retry.disabled = tasks.has(key);
+}
+
+async function refresh() {
+    const current = ++refreshCount;
+    try {
+        const ctx = context();
+        if (!enabled(ctx)) {
+            draw(null);
+            showStatus('已暂停世界记录。');
+            return;
+        }
+        const selection = await snapshot(ctx);
+        const view = selection && await request('/view', selection);
+        if (current === refreshCount && keyOf(scopeOf(context())) === (selection?.key ?? 'null')) draw(view, selection?.key);
+    } catch (error) {
+        if (current === refreshCount) showStatus(error.message);
+    }
+}
+
+function inspectActualPrompt(event) {
+    const generation = activeGeneration;
+    if (event.dryRun || !generation?.audit) return;
+    const contents = event.chat?.map(message => typeof message.content === 'string' ? message.content : '').join('\n')
+        ?? event.prompt ?? '';
+    if (typeof contents === 'string' && contents.includes(marker)) {
+        generation.audit.confirmed = true;
+        if (panel && keyOf(scopeOf(context())) === generation.key) {
+            panel.querySelector('[data-view="prompt"]').textContent = generation.audit.prompt;
+        }
+    }
+}
+
+globalThis.livingWorldEngineBeforeGenerate = async (_chat, contextSize, _abort, type = 'normal') => {
+    const ctx = context();
+    clearPrompt(ctx);
+    activeGeneration = undefined;
+    if (!enabled(ctx) || !supported.has(type)) return;
+    const scope = scopeOf(ctx);
+    if (!scope) return;
+    const key = keyOf(scope);
+    const generation = { key, canceled: false, ready: false };
+    activeGeneration = generation;
+    try {
+        await tasks.get(key);
+        if (activeGeneration !== generation || generation.canceled || keyOf(scopeOf(context())) !== key) return;
+        const current = context();
+        // The swipe placeholder and the text being continued belong to the response being replaced.
+        const replacesTail = ['swipe', 'continue', 'append'].includes(type) && !current.chat.at(-1)?.is_user;
+        const selection = await snapshot(current, replacesTail ? current.chat.slice(0, -1) : current.chat);
+        if (!selection || selection.key !== key) return;
+        const budget = Number.isFinite(contextSize) ? Math.floor(contextSize * 0.65) : 6000;
+        const view = await request('/view', selection, { budget });
+        if (activeGeneration !== generation || generation.canceled || keyOf(scopeOf(context())) !== key) return;
+        if (view.prompt) {
+            const prompt = view.prompt.replaceAll('{{', '｛｛').replaceAll('}}', '｝｝');
+            ctx.setExtensionPrompt(id, prompt, 1, 1, false, 0);
+            generation.audit = { prompt, confirmed: false };
+            audits.set(key, generation.audit);
+        }
+        generation.ready = ['ready', 'conflict'].includes(view.status);
+        draw(view, key);
+    } catch (error) {
+        showStatus('本轮无法载入世界状态。' + error.message);
+    }
+};
+
+function enqueue(selectionPromise, key, retry = false) {
+    if (tasks.has(key)) return tasks.get(key);
+    const job = (async () => {
+        try {
+            const selection = await selectionPromise;
+            if (!selection || selection.key !== key || !await stillSelected(selection)) return;
+            const view = await request('/view', selection, { retry });
+            if (!view.canRecord || (view.status === 'conflict' && (!retry || !view.retryBasis))) return;
+            const basis = view.retryBasis ?? view;
+            const entries = selection.entries.slice(basis.start);
+            if (entries.length > 48 || entries.reduce((sum, entry) => sum + entry.text.length, 0) > 160_000) {
+                throw new Error('待提取的消息过长，请在当前聊天重新建立起点或缩短未记录的历史。');
+            }
+            const ctx = context();
+            if (!await stillSelected(selection)) return;
+            showStatus('正在提取世界记录…');
+            const proposal = await extractTurn(ctx, settings(ctx).profile, view.state, basis, entries);
+            if (!await stillSelected(selection)) return;
+            await request('/record', selection, {
+                epoch: view.epoch, base: view.base, tip: view.tip, entries, proposal, retry,
+            });
+            tasks.delete(key);
+            await refresh();
+        } catch (error) {
+            if (keyOf(scopeOf(context())) === key) showStatus('世界记录待补记。' + error.message);
+        } finally {
+            if (tasks.get(key) === job) tasks.delete(key);
+            if (panel && keyOf(scopeOf(context())) === key) panel.querySelector('[data-act="retry"]').disabled = false;
+        }
+    })();
+    tasks.set(key, job);
+    return job;
+}
+
+function onRendered(messageIndex, type) {
+    const ctx = context();
+    const generation = activeGeneration;
+    if (!generation || !supported.has(type)) return;
+    activeGeneration = undefined;
+    clearPrompt(ctx);
+    const rendered = ctx.chat[messageIndex];
+    const prose = rendered?.mes;
+    if (!enabled(ctx) || !generation.ready || generation.canceled || generation.key !== keyOf(scopeOf(ctx))
+        || !rendered || rendered.is_user) {
+        void refresh();
+        return;
+    }
+    // Let SillyTavern finish assigning swipe metadata before capturing the selected reply.
+    const selection = new Promise(resolve => setTimeout(resolve, 0)).then(() => {
+        const current = context();
+        if (keyOf(scopeOf(current)) !== generation.key || current.chat[messageIndex] !== rendered || rendered.mes !== prose) return null;
+        return snapshot(current, current.chat.slice(0, messageIndex + 1));
+    });
+    void enqueue(selection, generation.key);
+}
+
+function lines(value) {
+    return value.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
+}
+
+function fields(line) {
+    return line.split(/[|｜]/u).map(field => field.trim());
+}
+
+function seedFromPanel() {
+    const value = name => panel.querySelector('[name="' + name + '"]').value;
+    const [hours, mins] = value('lwe-time').split(':').map(Number);
+    const characters = lines(value('lwe-characters')).map(line => {
+        const [name, location, coins] = fields(line);
+        return { name, location, coins: coins ? Number(coins) : null, memories: [], items: [] };
+    });
+    for (const line of lines(value('lwe-memories'))) {
+        const [who, memory] = fields(line);
+        const person = characters.find(entry => entry.name === who);
+        if (!person || !memory) throw new Error('初始记忆格式为「角色 | 记忆」，角色须在上方名单内。');
+        person.memories.push(memory);
+    }
+    for (const line of lines(value('lwe-items'))) {
+        const [who, name, count] = fields(line);
+        const person = characters.find(entry => entry.name === who);
+        if (!person || !name || !count) throw new Error('初始物品格式为「角色 | 物品 | 数量」。');
+        person.items.push({ name, count: Number(count) });
+    }
+    return {
+        minute: (Number(value('lwe-day')) - 1) * 1440 + hours * 60 + mins,
+        locations: lines(value('lwe-places')),
+        characters,
+        rules: lines(value('lwe-rules')),
+        routes: lines(value('lwe-routes')).map(line => {
+            const [from, to, minutes, mode = '步行'] = fields(line);
+            return { from, to, minutes: Number(minutes), mode };
+        }),
+    };
+}
+
+function example() {
+    const set = (name, value) => { panel.querySelector('[name="' + name + '"]').value = value; };
+    set('lwe-day', '1');
+    set('lwe-time', '09:00');
+    set('lwe-places', '旅店\n集市');
+    set('lwe-characters', '旅人 | 旅店 | 10\n阿青 | 旅店\n阿岚 | 集市');
+    set('lwe-routes', '旅店 | 集市 | 12 | 步行\n集市 | 旅店 | 12 | 步行');
+    set('lwe-rules', '人物只有亲历、听见或经转述才知道消息。\n只能按实际付款、赊账或物品交接更新记录。');
+    set('lwe-memories', '阿青 | 旧钥匙藏在旅店二楼的书里。');
+    set('lwe-items', '旅人 | 地图 | 1');
+}
+
+function updateProfiles() {
+    if (!panel) return;
+    const ctx = context();
+    const select = panel.querySelector('[data-act="profile"]');
+    select.replaceChildren(new Option('使用当前酒馆连接', ''));
+    for (const profile of ctx.extensionSettings.connectionManager?.profiles ?? []) {
+        if (profile.id) select.add(new Option(profile.name || profile.id, profile.id));
+    }
+    const value = settings(ctx).profile;
+    if (value && !Array.from(select.options).some(option => option.value === value)) {
+        select.add(new Option('已选连接不可用，请重新选择', value));
+    }
+    select.value = value;
+}
+
+function mount() {
+    if (panel) return;
+    const host = document.querySelector('#extensions_settings2') ?? document.querySelector('#extensions_settings');
+    if (!host) return;
+    panel = document.createElement('details');
+    panel.id = 'lwe-panel';
+    panel.innerHTML = [
+        '<summary><strong>Living World Engine · 世界引擎</strong></summary>',
+        '<div class="lwe-stack">',
+        '<p class="lwe-status" role="status" aria-live="polite"></p>',
+        '<div class="lwe-row"><label><input type="checkbox" data-act="enabled"> 启用世界记录</label>',
+        '<button class="menu_button" type="button" data-act="refresh">刷新查看</button>',
+        '<button class="menu_button" type="button" data-act="retry" hidden>补记当前回复</button></div>',
+        '<label>状态记录员的连接 <select class="text_pole" data-act="profile"></select></label>',
+        '<small>建立世界起点后，每轮正文显示后会额外调用一次状态记录员。</small>',
+        '<details data-part="seed" hidden><summary>设置世界起点</summary><div class="lwe-stack">',
+        '<small>当前已有正文作为起点之前的历史。填入此刻的事实，接下来的回复会更新它们。</small>',
+        '<div class="lwe-row"><label>第 <input name="lwe-day" class="text_pole" type="number" min="1" value="1"> 天</label>',
+        '<label>时间 <input name="lwe-time" class="text_pole" type="time" value="09:00"></label></div>',
+        '<label>地点，每行一个<textarea name="lwe-places" class="text_pole" rows="2" placeholder="旅店"></textarea></label>',
+        '<label>角色，每行「名字 | 位置 | 金币余额」，未知余额可留空<textarea name="lwe-characters" class="text_pole" rows="3" placeholder="旅人 | 旅店 | 10"></textarea></label>',
+        '<label>路线，每行「起点 | 终点 | 分钟 | 移动方式」<textarea name="lwe-routes" class="text_pole" rows="2" placeholder="旅店 | 集市 | 12 | 步行"></textarea></label>',
+        '<label>硬设定和规则，每行一条<textarea name="lwe-rules" class="text_pole" rows="2"></textarea></label>',
+        '<label>初始记忆，每行「角色 | 记忆」<textarea name="lwe-memories" class="text_pole" rows="2"></textarea></label>',
+        '<label>初始物品，每行「角色 | 物品 | 数量」<textarea name="lwe-items" class="text_pole" rows="2"></textarea></label>',
+        '<div class="lwe-row"><button class="menu_button" type="button" data-act="example">填入旅店示例</button>',
+        '<button class="menu_button" type="button" data-act="seed">建立世界起点</button></div></div></details>',
+        '<details open><summary>当前世界记录</summary><pre data-view="state"></pre></details>',
+        '<details><summary>最近一次实际注入的世界上下文</summary><pre data-view="prompt"></pre></details></div>',
+    ].join('');
+    host.append(panel);
+    panel.querySelector('[data-act="enabled"]').checked = enabled(context());
+    updateProfiles();
+    panel.querySelector('[data-act="enabled"]').addEventListener('change', event => {
+        const ctx = context();
+        settings(ctx).enabled = event.target.checked;
+        ctx.saveSettingsDebounced();
+        clearPrompt(ctx);
+        void refresh();
+    });
+    panel.querySelector('[data-act="profile"]').addEventListener('change', event => {
+        const ctx = context();
+        settings(ctx).profile = event.target.value;
+        ctx.saveSettingsDebounced();
+    });
+    panel.querySelector('[data-act="example"]').addEventListener('click', example);
+    panel.querySelector('[data-act="refresh"]').addEventListener('click', () => void refresh());
+    panel.querySelector('[data-act="retry"]').addEventListener('click', () => {
+        const ctx = context();
+        const scope = scopeOf(ctx);
+        if (scope) void enqueue(snapshot(ctx), keyOf(scope), true);
+    });
+    panel.querySelector('[data-act="seed"]').addEventListener('click', async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            const selected = await snapshot(context());
+            if (!selected) throw new Error('请先打开一个聊天。');
+            const view = await request('/seed', selected, {
+                seed: seedFromPanel(), rebuild: button.dataset.rebuild === 'true',
+            });
+            if (keyOf(scopeOf(context())) === selected.key) draw(view, selected.key);
+        } catch (error) {
+            showStatus(error.message);
+        } finally {
+            button.disabled = false;
+        }
+    });
+    void refresh();
+}
+
+const ctx = context();
+const { eventSource, eventTypes } = ctx;
+eventSource.on(eventTypes.APP_READY, mount);
+eventSource.on(eventTypes.CONNECTION_PROFILE_LOADED, updateProfiles);
+eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, inspectActualPrompt);
+eventSource.on(eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, inspectActualPrompt);
+eventSource.on(eventTypes.CHARACTER_MESSAGE_RENDERED, onRendered);
+eventSource.on(eventTypes.GENERATION_STOPPED, () => {
+    if (activeGeneration) activeGeneration.canceled = true;
+    clearPrompt();
+});
+eventSource.on(eventTypes.CHAT_CHANGED, () => {
+    activeGeneration = undefined;
+    clearPrompt();
+    void refresh();
+});
+for (const type of ['MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MESSAGE_EDITED', 'MESSAGE_UPDATED']) {
+    if (eventTypes[type]) eventSource.on(eventTypes[type], () => void refresh());
+}

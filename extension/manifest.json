@@ -1,0 +1,10 @@
+{
+  "display_name": "Living World Engine",
+  "loading_order": 70,
+  "js": "index.js",
+  "css": "style.css",
+  "generate_interceptor": "livingWorldEngineBeforeGenerate",
+  "author": "Living World Engine",
+  "version": "0.1.0",
+  "minimum_client_version": "1.19.0"
+}

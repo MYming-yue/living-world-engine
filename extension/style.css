@@ -1,0 +1,21 @@
+#lwe-panel { padding: .45rem 0; }
+#lwe-panel > summary, #lwe-panel details > summary { cursor: pointer; padding: .25rem 0; }
+#lwe-panel .lwe-stack { display: grid; gap: .45rem; }
+#lwe-panel .lwe-row { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+#lwe-panel label { display: block; }
+#lwe-panel input[type="number"] { width: 5.5rem; }
+#lwe-panel input[type="time"] { width: 8rem; }
+#lwe-panel textarea { width: 100%; resize: vertical; }
+#lwe-panel pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 24rem;
+    overflow: auto;
+    font: inherit;
+    padding: .5rem;
+    margin: .2rem 0;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: .35rem;
+}
+#lwe-panel .lwe-status { min-height: 1.5em; }
+#lwe-panel [hidden] { display: none !important; }
