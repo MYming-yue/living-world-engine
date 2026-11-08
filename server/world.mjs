@@ -104,6 +104,16 @@ export function makeWorld(seed) {
     return state;
 }
 
+export function coreRoster(value, state) {
+    const roster = list(value, '核心角色', 8).map(entry => ({
+        name: character(state, text(entry?.name, '核心角色名', 80)).name,
+        profile: text(entry.profile, '人格与背景', 2400),
+        goals: text(entry.goals, '目标与日常', 600),
+    }));
+    check(new Set(roster.map(entry => entry.name)).size === roster.length, '核心角色名重复');
+    return roster;
+}
+
 function normalized(value) {
     return value.replace(/\s+/gu, ' ').trim();
 }
@@ -140,23 +150,64 @@ export function parseProposal(raw, entries, freshEntries, hasPending) {
     };
 }
 
+export function parseBackground(raw, foreground, roster, entries) {
+    const events = list(raw.background ?? [], '幕后事件', 16);
+    if (!events.length) return [];
+    check(foreground.elapsed > 0, '本楼没有经过故事时间');
+    check(entries.filter(entry => entry.role === 'assistant').length === 1, '补记多楼时只保存前台事实');
+    const names = new Set(roster.map(entry => entry.name));
+    const presence = list(raw.onstage, '前台出场时段', 32).map(entry => {
+        check(names.has(entry?.who), '前台出场时段只需标注核心角色');
+        const start = number(entry.start, '出场起点', 0, foreground.elapsed);
+        const end = number(entry.end, '出场终点', start, foreground.elapsed);
+        quote(entry.evidence, entries, '出场依据');
+        return { who: entry.who, start, end };
+    });
+    return events.map(event => {
+        const who = event?.who;
+        check(names.has(who), '幕后事件只能由核心角色发起');
+        const start = number(event.start, '幕后起点', 0, foreground.elapsed);
+        const offset = number(event.offset, '幕后事件时间', start + 1, foreground.elapsed);
+        const onstage = presence.some(window => window.who === who && start <= window.end && offset >= window.start)
+            || foreground.events.some(scene => scene.offset >= start && scene.offset <= offset
+                && scene.changes.some(change => change?.who === who || change?.name === who
+                    || change?.from === who || change?.to === who));
+        check(!onstage, '「' + who + '」的幕后时段与前台活动重叠');
+        const changes = list(event.changes, '幕后变化', 12);
+        for (const change of changes) {
+            const type = change?.type;
+            check(type === 'relation' ? change.from === who
+                : ['life', 'condition', 'travel', 'move', 'memory', 'coins', 'debt', 'item'].includes(type) && change.who === who,
+            '幕后事件只能更新该核心角色自己的状态或关系');
+        }
+        const summary = text(event.summary, '幕后事件', 300);
+        return { kind: 'background', who, start, offset, summary, evidence: summary, changes };
+    });
+}
+
 export function applyProposal(previous, proposal, source, { clone = true } = {}) {
     const state = clone ? structuredClone(previous) : previous;
     const travelTimes = new Map();
     let lastOffset = 0;
-    for (const event of proposal.events) {
+    const timeline = proposal.background?.length
+        ? [...proposal.events, ...proposal.background].sort((a, b) => a.offset - b.offset)
+        : proposal.events;
+    for (const event of timeline) {
         check(event.offset >= lastOffset, '事件顺序与时间不一致');
         lastOffset = event.offset;
         const minute = state.minute + event.offset;
         for (const change of event.changes) {
             try {
-                applyChange(state, change, { minute, source, evidence: event.evidence, travelTimes, offset: event.offset });
+                applyChange(state, change, { minute, source, evidence: event.evidence, travelTimes,
+                    offset: event.offset, backgroundStart: event.kind === 'background' ? event.start : undefined });
             } catch (error) {
                 error.evidence = event.evidence;
                 throw error;
             }
         }
-        state.events.push({ minute, source, summary: event.summary, evidence: event.evidence });
+        state.events.push({ minute, source, summary: event.summary, evidence: event.evidence,
+            ...(event.kind === 'background' ? { kind: event.kind, who: event.who, start: state.minute + event.start } : {}),
+        });
     }
     state.minute = number(state.minute + proposal.elapsed, '世界时间');
     if (proposal.elapsed) {
@@ -201,6 +252,8 @@ function applyChange(state, raw, at) {
                 ? Math.max(0, state.minute - person.travel.started) : 0;
             const total = (at.travelTimes.get(person.name) ?? 0) + Math.max(0, minutes - prior);
             check(total <= at.offset, '「' + person.name + '」的移动耗时超过该事件的时间');
+            check(at.backgroundStart === undefined || minutes - prior <= at.offset - at.backgroundStart,
+                '「' + person.name + '」的移动耗时超过该幕后时段');
             at.travelTimes.set(person.name, total);
             person.location = route.to;
             person.travel = null;
@@ -253,6 +306,11 @@ function applyChange(state, raw, at) {
                 note: text(raw.note, '角色状态'), minute: at.minute, source: at.source, evidence: at.evidence,
             };
             return;
+        case 'life':
+            character(state, raw.who).life = {
+                note: text(raw.note, '生活近况', 600), minute: at.minute, source: at.source, evidence: at.evidence,
+            };
+            return;
         case 'relation': {
             character(state, raw.from);
             character(state, raw.to);
@@ -277,7 +335,7 @@ export function storyTime(minutes) {
     return '第 ' + day + ' 天 ' + hours + ':' + mins;
 }
 
-export function promptFor(state, issues, focus, budget = 6000) {
+export function promptFor(state, issues, focus, budget = 6000, roster = []) {
     const sections = [
         '[Living World Engine · 本轮世界资料]',
         '编剧根据事实安排情节，导演把它写成正文。事件结果由你在玩家行动和已有世界事实的约束内创作。',
@@ -302,6 +360,15 @@ export function promptFor(state, issues, focus, budget = 6000) {
         if (person.items.length) line.push('物品 ' + person.items.slice(0, 12).map(item => item.name + '×' + item.count).join('、'));
         if (person.condition) line.push(person.condition.note);
         append(line.join(' | '));
+    }
+    for (const person of ordered) {
+        const core = roster.find(entry => entry.name === person.name);
+        if (!core) continue;
+        const latest = state.events.findLast(event => event.kind === 'background' && event.who === person.name);
+        if (latest) append(person.name + ' 的幕后近况（按正文和角色记忆判断谁知道）：' + latest.summary);
+        if (person.life) append(person.name + ' 的生活状态：' + person.life.note);
+        append('核心角色 ' + person.name + ' 的目标与日常：' + core.goals);
+        append('核心角色 ' + person.name + ' 的人格与背景：' + core.profile);
     }
     const relevantRoutes = [...state.routes].sort((a, b) =>
         Number(focus.includes(b.from) || focus.includes(b.to)) - Number(focus.includes(a.from) || focus.includes(a.to)));

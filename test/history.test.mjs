@@ -38,6 +38,7 @@ function prepare(ledger, entries, update) {
     const view = viewLedger(ledger, history);
     return {
         history, epoch: view.epoch, tip: view.tip, base: view.base, entries: entries.slice(view.start), proposal: update,
+        rosterVersion: view.rosterVersion,
     };
 }
 
@@ -135,4 +136,74 @@ test('a fabricated citation does not change the world', () => {
     assert.equal(view.status, 'conflict');
     assert.equal(person(view, '旅人').location, '旅店');
     assert.equal(view.state.time, '第 1 天 09:00');
+});
+
+const coreSeed = { ...seed, core: [
+    { name: '阿青', profile: '旅店管事', goals: '修补旧书' },
+    { name: '阿岚', profile: '集市学徒', goals: '准备独立看摊' },
+] };
+
+test('background advances only the selected branch, and its actual director context survives reload', () => {
+    const ledger = makeLedger(coreSeed, []);
+    const before = user('我跟阿青聊了会儿。');
+    const first = reply('阿青陪旅人在旅店坐了十分钟。');
+    const update = {
+        ...proposal(first.text, [], 10),
+        onstage: [{ who: '阿青', start: 0, end: 10, evidence: first.text }],
+        background: [{ who: '阿岚', start: 1, offset: 6, summary: '阿岚点完了待售的货',
+            changes: [{ type: 'life', who: '阿岚', note: '清点已完成，接下来请师傅验货。' }] }],
+    };
+    const context = viewLedger(ledger, ids([before])).prompt;
+    recordTurn(ledger, { ...prepare(ledger, [before, first], update), directorContext: context });
+
+    const alternative = reply('阿青点了点头。');
+    const changed = save(ledger, [before, alternative], proposal(alternative.text, []));
+    assert.equal(changed.state.time, '第 1 天 09:00');
+    assert.equal(person(changed, '阿岚').life, undefined);
+    assert.equal(changed.directorContext, null);
+
+    const restored = viewLedger(JSON.parse(JSON.stringify(ledger)), ids([before, first]));
+    assert.equal(restored.state.time, '第 1 天 09:10');
+    assert.equal(person(restored, '阿岚').life.minute, 546);
+    assert.equal(person(restored, '阿青').life, undefined);
+    assert.equal(restored.state.events[0].kind, 'background');
+    assert.match(restored.prompt, /阿岚 的幕后近况.*点完了待售的货/);
+    assert.equal(restored.directorContext, context);
+});
+
+test('invalid background is visible without undoing foreground, and a foreground conflict blocks background', () => {
+    const ledger = makeLedger(coreSeed, []);
+    const input = user('等一下，再问问这盏灯。');
+    const first = reply('阿青陪旅人等了两分钟。');
+    const onstage = [{ who: '阿青', start: 0, end: 2, evidence: first.text }];
+    for (const [elapsed, who, offset, reason] of [
+        [2, '阿青', 1, /与前台活动重叠/],
+        [2, '旅人', 1, /只能由核心角色发起/],
+        [2, '阿岚', 3, /超出允许范围/],
+        [0, '阿岚', 1, /没有经过故事时间/],
+    ]) {
+        const variant = message('assistant', first.text, `variant-${elapsed}-${who}-${offset}`);
+        const view = save(ledger, [input, variant], { ...proposal(first.text, [], elapsed), onstage,
+            background: [{ who, start: 0, offset, summary: '理货', changes: [] }],
+        });
+        assert.equal(view.state.minute, seed.minute + elapsed);
+        assert.equal(view.state.events.length, 1);
+        assert.match(view.backgroundIssue, reason);
+    }
+    const conflict = reply('旅人付了十五枚金币买灯。');
+    const view = save(ledger, [input, conflict], {
+        ...proposal(conflict.text, [{ type: 'coins', who: '旅人', delta: -15 }], 2),
+        onstage: [], background: [{ who: '阿岚', start: 0, offset: 1, summary: '理货', changes: [] }],
+    });
+    assert.equal(view.status, 'conflict');
+    assert.equal(view.state.time, '第 1 天 09:00');
+    assert.deepEqual(view.state.events, []);
+});
+
+test('an older ledger opens without selecting any core characters', () => {
+    const ledger = makeLedger(seed, []);
+    delete ledger.core;
+    const view = viewLedger(JSON.parse(JSON.stringify(ledger)), []);
+    assert.deepEqual(view.core, []);
+    assert.deepEqual(view.coreCandidates, ['旅人', '阿青', '阿岚']);
 });

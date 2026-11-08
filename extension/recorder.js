@@ -18,6 +18,16 @@ const instructions = [
     '若明确与既有世界事实或规则互斥，在 conflicts 中返回 {"detail":"涉及的世界事实和原文如何冲突","evidence":"冲突原句"}。不要替编导改写剧情或决定结果。',
     '有待处理冲突时，从最后确认时点重新提取全部待处理原文及新正文。只有新正文明确补上因果时才填写 repairEvidence，逐字引用新正文，并按补写后的实际结果提取。否则保留 conflicts 或令 repairEvidence 为 null。',
     '只记录相关事实。使用已知角色、路线和物品的准确名称。角色的计划、误解和传闻不能变成客观事件。',
+    '只有会反复登场且与核心角色有关的人才新增为关联配角。临时 NPC 的影响留在事件或核心角色的状态里。',
+].join('\n');
+
+const backgroundInstructions = [
+    '同一份 JSON 可以另交低精度的幕后提案。前台 events 仍严格引用原文，幕后内容只能放入 background。',
+    '用 onstage 标注核心角色实际参与前台的时段，每项为 {"who":"姓名","start":0,"end":1,"evidence":"出场原文"}。只被提及不算出场。参与时段不明时按整楼在场处理。',
+    'background 每项为 {"who":"核心角色名","start":0,"offset":10,"summary":"她完成了什么","changes":[]}。start 是该段离场活动开始的分钟偏移，offset 是完成的分钟偏移。两者须落在 0 到 elapsed 内且 start 小于 offset。',
+    '只为 coreCast 里的角色推演。按她的性格、目标、近期状态及位置概括真实可发生的进展，时段不能与她的前台活动重叠。没有值得记录的变化时填空数组。零耗时、补记多楼或前台有冲突时也填空数组。',
+    '可用 {"type":"life","who":"核心角色名","note":"仍有后续影响的生活近况或计划进度"} 保存近况。其余变化沿用前台格式且只修改发起者本人；关系允许她对已登记角色的关系变化。其他人是否获知留给前台依据实际传播另行记录。',
+    '幕后只推演日常和现有计划进展。涉及世界规则、角色生死或其他重大不可逆结果留给前台。',
 ].join('\n');
 
 export const customRecorderProfile = '__lwe_custom_recorder__';
@@ -48,15 +58,16 @@ export function parseRecorderReply(reply) {
     }
 }
 
-export async function extractTurn(ctx, profile, state, basis, entries) {
+export async function extractTurn(ctx, profile, state, basis, entries, core = []) {
     const prompt = JSON.stringify({
         lastConfirmed: state,
+        ...(core.length ? { coreCast: core } : {}),
         unresolved: basis.issues,
         earlierMessages: entries.slice(0, basis.freshFrom - basis.start).map(entry => ({ who: entry.name, role: entry.role, text: entry.text })),
         newMessages: entries.slice(basis.freshFrom - basis.start).map(entry => ({ who: entry.name, role: entry.role, text: entry.text })),
     });
     const messages = [
-        { role: 'system', content: instructions },
+        { role: 'system', content: core.length ? instructions + '\n' + backgroundInstructions : instructions },
         { role: 'user', content: prompt },
     ];
     let response;

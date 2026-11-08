@@ -3,13 +3,15 @@ import { customRecorderProfile, extractTurn, recorderRequest } from './recorder.
 const id = 'living-world-engine';
 const endpoint = '/api/plugins/' + id;
 const marker = '[Living World Engine · 本轮世界资料]';
+const endMarker = '[Living World Engine · 世界资料结束]';
 const supported = new Set(['normal', 'regenerate', 'swipe', 'continue', 'append', 'appendFinal']);
 const tasks = new Map();
-const audits = new Map();
+const audits = new WeakMap();
 const fingerprints = new WeakMap();
 const encoder = new TextEncoder();
 let activeGeneration;
 let panel;
+let coreEditor;
 let refreshCount = 0;
 
 function context() {
@@ -67,6 +69,7 @@ async function snapshot(ctx, chat = ctx.chat) {
     return {
         scope, entries, key: keyOf(scope),
         history: entries.map(({ id, role }) => ({ id, role })),
+        directorContext: auditFor(lastReply(chat)),
         focus: entries.slice(-2).map(entry => entry.text).join('\n').slice(-3000),
     };
 }
@@ -114,11 +117,16 @@ function stateText(view) {
         lines.push('上次推进 ' + state.clock.elapsed + ' 分钟' + (state.clock.estimated ? '（估计）' : '')
             + '。「' + state.clock.evidence + '」');
     }
+    lines.push('地点　' + state.locations.join('、'));
+    for (const rule of state.rules) lines.push('规则　' + rule);
     for (const character of state.characters) {
+        const core = view.core?.find(entry => entry.name === character.name);
         const where = character.travel ? character.travel.from + ' → ' + character.travel.to + '（途中）'
             : (character.location ?? '位置未确认');
-        lines.push('', character.name + ' · ' + where
+        lines.push('', character.name + (core ? '（核心）' : '') + ' · ' + where
             + (character.coins === null ? '' : ' · ' + character.coins + ' 枚金币'));
+        if (core) lines.push('目标与日常　' + core.goals);
+        if (character.life) lines.push('生活近况　' + character.life.note);
         if (character.condition) lines.push('状态　' + character.condition.note);
         if (character.items.length) lines.push('物品　' + character.items.map(item => item.name + ' × ' + item.count).join('、'));
         if (character.debts.length) lines.push('欠款　' + character.debts.map(debt => debt.to + ' ' + debt.coins + ' 枚').join('、'));
@@ -140,14 +148,89 @@ function stateText(view) {
     if (state.events.length) {
         lines.push('', '近期事件');
         for (const event of state.events.slice(-12)) {
-            lines.push(storyTime(event.minute) + '　' + event.summary + '〔' + event.source + '〕「' + event.evidence + '」');
+            const detail = event.kind === 'background' ? '幕后 · ' + event.who + ' · ' + event.summary
+                : '正文 · ' + event.summary + '「' + event.evidence + '」';
+            lines.push(storyTime(event.minute) + '　' + detail + '〔' + event.source + '〕');
         }
     }
     if (view.issues.length) {
         lines.push('', '待处理的冲突');
         for (const issue of view.issues) lines.push(issue.detail + (issue.evidence ? '「' + issue.evidence + '」' : ''));
     }
+    if (view.backgroundIssue) lines.push('', '本楼幕后变化未入账　' + view.backgroundIssue);
     return lines.join('\n');
+}
+
+function lastReply(chat) {
+    return chat.findLast(message => !message.is_user && !message.is_system && !['...', '…'].includes(message.mes));
+}
+
+function auditFor(message) {
+    const audit = message && audits.get(message);
+    return audit && audit.prose === message.mes && audit.swipe === message.swipe_id ? audit.context : undefined;
+}
+
+function directorText(view, key) {
+    if (activeGeneration?.key === key && activeGeneration?.audit) {
+        return activeGeneration.audit.context ?? (activeGeneration.audit.checked
+            ? '本次请求中未找到完整的引擎资料。' : '正在组装本次编导请求…');
+    }
+    const current = lastReply(context().chat);
+    return (view?.state && (auditFor(current) ?? view.directorContext)) || '当前回复没有可查看的编导上下文记录。';
+}
+
+function editCoreFields() {
+    const section = panel.querySelector('[data-part="core"]');
+    const name = section.querySelector('select').value;
+    const entry = coreEditor?.core.find(person => person.name === name);
+    section.querySelector('[name="lwe-profile"]').value = entry?.profile ?? '';
+    section.querySelector('[name="lwe-goals"]').value = entry?.goals ?? '';
+    section.querySelector('[data-act="remove-core"]').disabled = !entry;
+}
+
+function drawCore(view, key) {
+    const section = panel.querySelector('[data-part="core"]');
+    section.hidden = !view?.coreCandidates?.length;
+    if (section.hidden) {
+        coreEditor = undefined;
+        return;
+    }
+    if (coreEditor?.key === key && coreEditor.epoch === view.epoch && coreEditor.version === view.rosterVersion) return;
+    const select = section.querySelector('select');
+    const selected = coreEditor?.key === key ? select.value : '';
+    coreEditor = { key, epoch: view.epoch, version: view.rosterVersion, core: view.core };
+    select.replaceChildren(...view.coreCandidates.map(name =>
+        new Option(view.core.some(entry => entry.name === name) ? name + '（核心）' : name, name)));
+    select.value = view.coreCandidates.includes(selected) ? selected : (view.core[0]?.name ?? view.coreCandidates[0]);
+    editCoreFields();
+    section.querySelector('[data-view="core-status"]').textContent = view.core.length
+        ? '已登记 ' + view.core.length + ' 位核心角色。' : '登记后，这些角色才会参与幕后演化。';
+}
+
+async function saveCore(event) {
+    const button = event.currentTarget;
+    const editor = coreEditor;
+    if (!editor) return;
+    const section = button.closest('[data-part="core"]');
+    const fields = section.querySelector('fieldset');
+    const status = section.querySelector('[data-view="core-status"]');
+    const name = section.querySelector('select').value;
+    const core = editor.core.filter(person => person.name !== name);
+    if (button.dataset.act === 'save-core') {
+        core.push({ name, profile: section.querySelector('[name="lwe-profile"]').value,
+            goals: section.querySelector('[name="lwe-goals"]').value });
+    }
+    fields.disabled = true;
+    try {
+        const selected = await snapshot(context());
+        if (selected?.key !== editor.key) return;
+        const view = await request('/core', selected, { epoch: editor.epoch, rosterVersion: editor.version, core });
+        if (keyOf(scopeOf(context())) === selected.key) draw(view, selected.key);
+    } catch (error) {
+        if (keyOf(scopeOf(context())) === editor.key) status.textContent = error.message;
+    } finally {
+        fields.disabled = false;
+    }
 }
 
 function draw(view, key) {
@@ -161,9 +244,10 @@ function draw(view, key) {
     };
     showStatus(tasks.has(key) ? '正在提取世界记录…' : (status[view?.status] ?? '请选择一段聊天。'));
     panel.querySelector('[data-view="state"]').textContent = stateText(view);
-    const audit = audits.get(key);
-    panel.querySelector('[data-view="prompt"]').textContent = audit?.confirmed ? audit.prompt
-        : '本次打开酒馆后，当前聊天还没有确认注入的世界上下文。';
+    panel.querySelector('[data-view="prompt"]').textContent = directorText(view, key);
+    panel.querySelector('[data-view="state-json"]').textContent = view?.state
+        ? JSON.stringify({ ...view.state, core: view.core, issues: view.issues, backgroundIssue: view.backgroundIssue }, null, 2) : '';
+    drawCore(view, key);
     const seed = panel.querySelector('[data-part="seed"]');
     seed.hidden = !view || !['missing', 'rebuild'].includes(view.status);
     const create = seed.querySelector('[data-act="seed"]');
@@ -194,13 +278,15 @@ async function refresh() {
 function inspectActualPrompt(event) {
     const generation = activeGeneration;
     if (event.dryRun || !generation?.audit) return;
-    const contents = event.chat?.map(message => typeof message.content === 'string' ? message.content : '').join('\n')
-        ?? event.prompt ?? '';
-    if (typeof contents === 'string' && contents.includes(marker)) {
-        generation.audit.confirmed = true;
-        if (panel && keyOf(scopeOf(context())) === generation.key) {
-            panel.querySelector('[data-view="prompt"]').textContent = generation.audit.prompt;
-        }
+    const contents = Array.isArray(event.messages) ? event.messages.flatMap(({ content }) =>
+        Array.isArray(content) ? content.map(part => part?.text) : [content]) : [event.prompt];
+    const fragment = contents.find(value => typeof value === 'string' && value.includes(marker) && value.includes(endMarker));
+    const start = fragment?.indexOf(marker) ?? -1;
+    const end = fragment?.indexOf(endMarker, start) ?? -1;
+    generation.audit.checked = true;
+    generation.audit.context = end > start ? fragment.slice(start, end).trimEnd() : null;
+    if (panel && keyOf(scopeOf(context())) === generation.key) {
+        panel.querySelector('[data-view="prompt"]').textContent = directorText(null, generation.key);
     }
 }
 
@@ -226,15 +312,17 @@ globalThis.livingWorldEngineBeforeGenerate = async (_chat, contextSize, _abort, 
         const view = await request('/view', selection, { budget });
         if (activeGeneration !== generation || generation.canceled || keyOf(scopeOf(context())) !== key) return;
         if (view.prompt) {
-            const prompt = view.prompt.replaceAll('{{', '｛｛').replaceAll('}}', '｝｝');
+            const prompt = view.prompt.replaceAll('{{', '｛｛').replaceAll('}}', '｝｝') + '\n' + endMarker;
             ctx.setExtensionPrompt(id, prompt, 1, 1, false, 0);
-            generation.audit = { prompt, confirmed: false };
-            audits.set(key, generation.audit);
+            generation.audit = { context: null, checked: false };
         }
         generation.ready = ['ready', 'conflict'].includes(view.status);
         draw(view, key);
     } catch (error) {
         showStatus('本轮无法载入世界状态。' + error.message);
+        if (panel && activeGeneration === generation) {
+            panel.querySelector('[data-view="prompt"]').textContent = '本轮未载入世界上下文。';
+        }
     }
 };
 
@@ -254,10 +342,11 @@ function enqueue(selectionPromise, key, retry = false) {
             const ctx = context();
             if (!await stillSelected(selection)) return;
             showStatus('正在提取世界记录…');
-            const proposal = await extractTurn(ctx, settings(ctx).profile, view.state, basis, entries);
+            const proposal = await extractTurn(ctx, settings(ctx).profile, view.state, basis, entries, view.core);
             if (!await stillSelected(selection)) return;
             await request('/record', selection, {
-                epoch: view.epoch, base: view.base, tip: view.tip, entries, proposal, retry,
+                epoch: view.epoch, base: view.base, tip: view.tip, entries, proposal, retry, rosterVersion: view.rosterVersion,
+                directorContext: selection.directorContext,
             });
             tasks.delete(key);
             await refresh();
@@ -289,6 +378,7 @@ function onRendered(messageIndex, type) {
     const selection = new Promise(resolve => setTimeout(resolve, 0)).then(() => {
         const current = context();
         if (keyOf(scopeOf(current)) !== generation.key || current.chat[messageIndex] !== rendered || rendered.mes !== prose) return null;
+        if (generation.audit?.context) audits.set(rendered, { prose, swipe: rendered.swipe_id, context: generation.audit.context });
         return snapshot(current, current.chat.slice(0, messageIndex + 1));
     });
     void enqueue(selection, generation.key);
@@ -325,6 +415,10 @@ function seedFromPanel() {
         minute: (Number(value('lwe-day')) - 1) * 1440 + hours * 60 + mins,
         locations: lines(value('lwe-places')),
         characters,
+        core: lines(value('lwe-seed-core')).map(line => {
+            const [name, profile, goals] = fields(line);
+            return { name, profile, goals };
+        }),
         rules: lines(value('lwe-rules')),
         routes: lines(value('lwe-routes')).map(line => {
             const [from, to, minutes, mode = '步行'] = fields(line);
@@ -339,6 +433,7 @@ function example() {
     set('lwe-time', '09:00');
     set('lwe-places', '旅店\n集市');
     set('lwe-characters', '旅人 | 旅店 | 10\n阿青 | 旅店\n阿岚 | 集市');
+    set('lwe-seed-core', '阿青 | 旅店的年轻管事，细心，喜欢默默把事情做完 | 白天照看旅店，正在修补二楼旧书\n阿岚 | 做事利落的集市学徒，想有自己的摊位 | 白天理货，今天打算问师傅能否独立看摊');
     set('lwe-routes', '旅店 | 集市 | 12 | 步行\n集市 | 旅店 | 12 | 步行');
     set('lwe-rules', '人物只有亲历、听见或经转述才知道消息。\n只能按实际付款、赊账或物品交接更新记录。');
     set('lwe-memories', '阿青 | 旧钥匙藏在旅店二楼的书里。');
@@ -473,6 +568,18 @@ function mount() {
         '<div class="lwe-row"><label><input type="checkbox" data-act="enabled"> 启用世界记录</label>',
         '<button class="menu_button" type="button" data-act="refresh">刷新查看</button>',
         '<button class="menu_button" type="button" data-act="retry" hidden>补记当前回复</button></div>',
+        '<details open><summary>当前世界记录</summary><pre data-view="state"></pre>',
+        '<details><summary>查看当前状态 JSON</summary><pre data-view="state-json"></pre></details></details>',
+        '<details open><summary>本轮发给编导的世界资料</summary>',
+        '<small>这里显示实际请求中的引擎片段，对应当前选中的回复。</small><pre data-view="prompt"></pre></details>',
+        '<details data-part="core" hidden><summary>设置核心角色</summary><fieldset class="lwe-stack">',
+        '<small>从世界起点的角色里选择。最多八位，只有核心角色参与幕后演化。</small>',
+        '<label>角色<select class="text_pole"></select></label>',
+        '<label>角色卡 / 人格与背景<textarea class="text_pole" name="lwe-profile" rows="4" maxlength="2400"></textarea></label>',
+        '<label>目标与日常<textarea class="text_pole" name="lwe-goals" rows="2" maxlength="600"></textarea></label>',
+        '<div class="lwe-row"><button class="menu_button" type="button" data-act="save-core">保存核心角色</button>',
+        '<button class="menu_button" type="button" data-act="remove-core">移出主角团</button></div>',
+        '<small data-view="core-status" role="status"></small></fieldset></details>',
         '<label>状态记录员的连接 <select class="text_pole" data-act="profile"></select></label>',
         '<form data-part="recorder-connection" hidden><fieldset class="lwe-stack">',
         '<label>API 地址<input name="lwe-recorder-url" class="text_pole" type="url" placeholder="https://api.example.com/v1" required></label>',
@@ -493,14 +600,13 @@ function mount() {
         '<label>时间 <input name="lwe-time" class="text_pole" type="time" value="09:00"></label></div>',
         '<label>地点，每行一个<textarea name="lwe-places" class="text_pole" rows="2" placeholder="旅店"></textarea></label>',
         '<label>角色，每行「名字 | 位置 | 金币余额」，未知余额可留空<textarea name="lwe-characters" class="text_pole" rows="3" placeholder="旅人 | 旅店 | 10"></textarea></label>',
+        '<label>核心角色，可留空，每行「名字 | 人格与背景 | 目标与日常」<textarea name="lwe-seed-core" class="text_pole" rows="2"></textarea></label>',
         '<label>路线，每行「起点 | 终点 | 分钟 | 移动方式」<textarea name="lwe-routes" class="text_pole" rows="2" placeholder="旅店 | 集市 | 12 | 步行"></textarea></label>',
         '<label>硬设定和规则，每行一条<textarea name="lwe-rules" class="text_pole" rows="2"></textarea></label>',
         '<label>初始记忆，每行「角色 | 记忆」<textarea name="lwe-memories" class="text_pole" rows="2"></textarea></label>',
         '<label>初始物品，每行「角色 | 物品 | 数量」<textarea name="lwe-items" class="text_pole" rows="2"></textarea></label>',
         '<div class="lwe-row"><button class="menu_button" type="button" data-act="example">填入旅店示例</button>',
-        '<button class="menu_button" type="button" data-act="seed">建立世界起点</button></div></div></details>',
-        '<details open><summary>当前世界记录</summary><pre data-view="state"></pre></details>',
-        '<details><summary>最近一次实际注入的世界上下文</summary><pre data-view="prompt"></pre></details></div>',
+        '<button class="menu_button" type="button" data-act="seed">建立世界起点</button></div></div></details></div>',
     ].join('');
     host.append(panel);
     panel.querySelector('[data-act="enabled"]').checked = enabled(context());
@@ -522,6 +628,10 @@ function mount() {
     recorderForm.addEventListener('submit', saveRecorderConnection);
     recorderForm.addEventListener('input', () => updateRecorderTestButton(recorderForm));
     recorderForm.querySelector('[data-act="test-recorder"]').addEventListener('click', testRecorderConnection);
+    const coreSection = panel.querySelector('[data-part="core"]');
+    coreSection.querySelector('select').addEventListener('change', editCoreFields);
+    coreSection.querySelector('[data-act="save-core"]').addEventListener('click', saveCore);
+    coreSection.querySelector('[data-act="remove-core"]').addEventListener('click', saveCore);
     panel.querySelector('[data-act="example"]').addEventListener('click', example);
     panel.querySelector('[data-act="refresh"]').addEventListener('click', () => void refresh());
     panel.querySelector('[data-act="retry"]').addEventListener('click', () => {
@@ -552,7 +662,8 @@ const ctx = context();
 const { eventSource, eventTypes } = ctx;
 eventSource.on(eventTypes.APP_READY, mount);
 eventSource.on(eventTypes.CONNECTION_PROFILE_LOADED, updateProfiles);
-eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, inspectActualPrompt);
+eventSource.on(eventTypes.CHAT_COMPLETION_SETTINGS_READY, inspectActualPrompt);
+eventSource.on(eventTypes.TEXT_COMPLETION_SETTINGS_READY, inspectActualPrompt);
 eventSource.on(eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, inspectActualPrompt);
 eventSource.on(eventTypes.CHARACTER_MESSAGE_RENDERED, onRendered);
 eventSource.on(eventTypes.GENERATION_STOPPED, () => {

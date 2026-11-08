@@ -12,11 +12,12 @@ if (!['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname) || target.por
 const url = target.origin;
 const installUrl = process.env.LWE_INSTALL_GIT_URL;
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
-const page = await browser.newPage(installUrl ? { viewport: { width: 412, height: 892 }, isMobile: true, hasTouch: true } : {});
+const page = await browser.newPage({ viewport: { width: 412, height: 892 }, isMobile: true, hasTouch: true });
 const failures = [];
 const injections = [];
 const recorderInputs = [];
 const stateSelector = '#lwe-panel [data-view="state"]';
+const promptSelector = '#lwe-panel [data-view="prompt"]';
 const statusSelector = '#lwe-panel .lwe-status';
 let scriptIndex = 0;
 let releaseRecorder;
@@ -27,11 +28,16 @@ const replies = [
         prose: '阿青俯身听见旅人低声说出暗号「燕子」。',
         elapsed: 2,
         changes: [{ type: 'memory', who: '阿青', kind: 'heard', content: '暗号是燕子', via: '旅人私下告知' }],
+        onstage: [{ who: '阿青', start: 0, end: 2, evidence: '阿青俯身听见旅人低声说出暗号「燕子」。' }],
+        background: [{ who: '阿岚', start: 0, offset: 2, summary: '阿岚对完了摊位清单。',
+            changes: [{ type: 'life', who: '阿岚', note: '清点完成，正等师傅验货。' }] }],
     },
     {
         prose: '旅人步行十二分钟，从旅店抵达集市。',
         elapsed: 12,
         changes: [{ type: 'move', who: '旅人', from: '旅店', to: '集市', mode: '步行', minutes: 12 }],
+        background: [{ who: '阿青', start: 0, offset: 12, summary: '阿青修补好了旧书。',
+            changes: [{ type: 'life', who: '阿青', note: '旧书修补完成。' }] }],
     },
     {
         prose: '旅人在旅店又等了三分钟，暂未出门。',
@@ -58,6 +64,7 @@ function recordedContent(selected) {
         elapsed: selected.elapsed, estimated: false, clockEvidence: selected.prose,
         events: [{ summary: selected.prose, evidence: selected.prose, changes: selected.changes }],
         conflicts: [], repairEvidence: null,
+        onstage: selected.onstage ?? [], background: selected.background ?? [],
     });
 }
 
@@ -143,6 +150,12 @@ async function worldShows(text, timeout = 16_000) {
         { selector: stateSelector, text }, { timeout });
 }
 
+function actualEngineContext(index) {
+    const text = injections[index];
+    return text.slice(text.indexOf('[Living World Engine · 本轮世界资料]'),
+        text.indexOf('[Living World Engine · 世界资料结束]')).trimEnd();
+}
+
 async function send(text) {
     await page.evaluate(async text => {
         const input = document.querySelector('#send_textarea');
@@ -189,6 +202,7 @@ try {
         const ctx = SillyTavern.getContext();
         await ctx.selectCharacterById('0');
         await ctx.openCharacterChat(chatId);
+        ctx.extensionSettings['living-world-engine'] = { enabled: true, profile: '' };
         script.changeMainAPI('openai');
         Object.assign(api.oai_settings, {
             chat_completion_source: 'custom', custom_url: 'http://127.0.0.1:9999/v1',
@@ -200,6 +214,14 @@ try {
     await page.locator('#lwe-panel [data-act="example"]').evaluate(button => button.click());
     await page.locator('#lwe-panel [data-act="seed"]').evaluate(button => button.click());
     await worldShows('09:00');
+    await page.locator('#lwe-panel [data-part="core"]').evaluate(section => {
+        const select = section.querySelector('select');
+        select.value = '阿岚';
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        section.querySelector('[name="lwe-goals"]').value = '准备独立看摊，先向师傅交验货单。';
+        section.querySelector('[data-act="save-core"]').click();
+    });
+    await worldShows('准备独立看摊，先向师傅交验货单。');
 
     await send('我只告诉阿青，暗号是燕子。');
     assert.match(await page.locator('#chat .mes').last().textContent(), /阿青俯身听见/);
@@ -207,9 +229,12 @@ try {
     releaseRecorder();
     await worldShows('09:02');
     await worldShows('暗号是燕子（亲耳听到');
+    await worldShows('幕后 · 阿岚 · 阿岚对完了摊位清单。');
+    assert.match(await page.locator('#lwe-panel [data-view="state-json"]').textContent(), /清点完成，正等师傅验货/);
+    assert.match(recorderInputs[0].coreCast.find(person => person.name === '阿岚').goals, /交验货单/);
     assert.match(injections[0], /\[Living World Engine · 本轮世界资料\]/);
     assert.match(injections[0], /我只告诉阿青，暗号是燕子/);
-    assert.match(await page.locator('#lwe-panel [data-view="prompt"]').textContent(), /09:00/);
+    assert.equal(await page.locator(promptSelector).textContent(), actualEngineContext(0));
     await page.evaluate(async () => { (await import('/scripts/openai.js')).oai_settings.stream_openai = false; });
 
     await page.locator('#lwe-panel [data-act="profile"]').evaluate(select => {
@@ -241,12 +266,15 @@ try {
     await send('我步行去集市。');
     await worldShows('09:14');
     await worldShows('旅人 · 集市');
+    await worldShows('旧书修补完成。');
     assert.match(injections[1], /阿青 的记忆.*暗号是燕子/);
+    assert.match(injections[1], /阿岚 的幕后近况.*摊位清单/);
     assert.doesNotMatch(injections[1], /阿岚 的记忆.*暗号是燕子/);
 
     await page.evaluate(() => SillyTavern.getContext().generate('regenerate'));
     await worldShows('09:05');
     await worldShows('旅人 · 旅店');
+    assert.doesNotMatch(await page.locator(stateSelector).textContent(), /旧书修补完成。/);
     assert.match(injections[2], /当前时间：第 1 天 09:02/);
 
     await page.evaluate(async () => {
@@ -288,6 +316,7 @@ try {
     }, activeChatId);
     await worldShows('09:05');
     assert.equal(recorderInputs.length, 5);
+    assert.equal(await page.locator(promptSelector).textContent(), actualEngineContext(2));
     await page.waitForFunction(() => document.querySelector('#lwe-panel [data-view="recorder-test"]').dataset.result === 'ok');
     await page.evaluate(async prose => {
         const ctx = SillyTavern.getContext();
@@ -296,7 +325,7 @@ try {
     }, replies[0].prose);
     await page.waitForFunction(selector => document.querySelector(selector)?.textContent.includes('需要重建'), statusSelector);
     assert.deepEqual(failures, []);
-    console.log('SillyTavern browser smoke passed: independent recorder URL and key, native context injection, direct prose, travel, regenerate, swipe, conflict, truncation, reload, middle deletion.');
+    console.log('SillyTavern mobile browser smoke passed: cast editor, per-turn background, exact director context, branch rollback and reload, independent recorder, travel, conflicts and deletion.');
 } catch (error) {
     console.error('Status:', await page.locator(statusSelector).textContent({ timeout: 1000 }).catch(() => 'unavailable'));
     console.error('Browser errors:', failures);

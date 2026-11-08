@@ -6,15 +6,15 @@
 #lwe-panel input[type="number"] { width: 5.5rem; }
 #lwe-panel input[type="time"] { width: 8rem; }
 #lwe-panel textarea { width: 100%; resize: vertical; }
-#lwe-panel [data-part="recorder-connection"] fieldset {
+#lwe-panel fieldset {
     min-width: 0;
     margin: 0;
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: .35rem;
 }
-#lwe-panel [data-part="recorder-connection"] .text_pole { width: 100%; }
+#lwe-panel fieldset .text_pole { width: 100%; }
 #lwe-panel .lwe-inline-check { display: flex; align-items: center; gap: .4rem; }
-#lwe-panel .lwe-recorder-actions .menu_button { width: auto; min-width: max-content; white-space: nowrap; }
+#lwe-panel .lwe-row .menu_button { width: auto; min-width: max-content; white-space: nowrap; }
 #lwe-panel [data-view="recorder-test"][data-result="ok"] { color: var(--success-color, #7ccd91); }
 #lwe-panel [data-view="recorder-test"][data-result="failed"] { color: var(--error-color, #ef9494); }
 #lwe-panel pre {

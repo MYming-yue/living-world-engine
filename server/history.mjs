@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { applyProposal, check, inspectable, makeWorld, parseProposal, promptFor, text } from './world.mjs';
+import { applyProposal, check, coreRoster, inspectable, makeWorld, parseBackground, parseProposal, promptFor, text } from './world.mjs';
 
 export function digest(value) {
     return createHash('sha256').update(value).digest('hex');
@@ -23,7 +23,9 @@ function validHistory(history) {
 
 export function makeLedger(seed, history) {
     validHistory(history);
-    return { version: 1, epoch: randomUUID(), anchor: history, initial: makeWorld(seed), turns: {} };
+    const initial = makeWorld(seed);
+    const core = coreRoster(seed.core ?? [], initial);
+    return { version: 1, epoch: randomUUID(), anchor: history, initial, core, turns: {} };
 }
 
 function scan(ledger, history) {
@@ -48,6 +50,7 @@ function scan(ledger, history) {
     let freshFrom = anchorLength;
     let issues = [];
     let unrecorded = false;
+    let latest;
     const markers = [];
     for (let i = anchorLength; i < history.length; i++) {
         const { id, role } = history[i];
@@ -58,6 +61,7 @@ function scan(ledger, history) {
         }
         if (role !== 'assistant') continue;
         const turn = ledger.turns[key];
+        latest = turn;
         if (!turn) {
             unrecorded = true;
             continue;
@@ -76,7 +80,7 @@ function scan(ledger, history) {
     }
     return {
         status: unrecorded ? 'unrecorded' : issues.length ? 'conflict' : 'ready',
-        state, base, tip: key, start, freshFrom, markers, issues,
+        state, base, tip: key, start, freshFrom, markers, issues, latest,
         canRecord: history.length > anchorLength && history.at(-1)?.role === 'assistant'
             && (unrecorded || Boolean(issues.length)),
     };
@@ -92,12 +96,16 @@ export function viewLedger(ledger, history, { focus = '', budget = 6000 } = {}) 
     if (!ledger) return { status: 'missing' };
     const view = scan(ledger, history);
     if (view.status === 'rebuild') return view;
-    const { status, base, tip, start, freshFrom, issues, canRecord, state } = view;
+    const { status, base, tip, start, freshFrom, issues, canRecord, state, latest } = view;
+    const core = ledger.core ?? [];
     return {
         status, epoch: ledger.epoch, base, tip, start, freshFrom, issues,
         canRecord: canRecord && !(status === 'conflict' && hasFollowers(ledger, tip)),
-        state: inspectable(state),
-        prompt: promptFor(state, issues, focus, budget),
+        state: inspectable(state), core, rosterVersion: digest(JSON.stringify(core)),
+        coreCandidates: ledger.initial.characters.map(person => person.name),
+        directorContext: latest?.directorContext ?? null,
+        backgroundIssue: latest?.backgroundIssue ?? null,
+        prompt: promptFor(state, issues, focus, budget, core),
     };
 }
 
@@ -123,6 +131,11 @@ export function recordTurn(ledger, body) {
     check(entries.at(-1)?.role === 'assistant', '等待编导回复');
 
     const turn = { base: basis.base, markers: full.markers.slice(basis.start - ledger.anchor.length), updatedAt: new Date().toISOString() };
+    const directorContext = body.directorContext ?? existing?.directorContext;
+    if (typeof directorContext === 'string' && directorContext.length <= 10_000
+        && directorContext.startsWith('[Living World Engine · 本轮世界资料]')) {
+        turn.directorContext = directorContext;
+    }
     try {
         check(JSON.stringify(body.proposal ?? null).length <= 100_000, '状态记录员提案过长');
         const proposal = parseProposal(body.proposal, entries, entries.slice(basis.freshFrom - basis.start), basis.issues.length > 0);
@@ -131,6 +144,18 @@ export function recordTurn(ledger, body) {
         } else {
             applyProposal(basis.state, proposal, full.tip.slice(0, 12));
             turn.proposal = proposal;
+            const roster = ledger.core ?? [];
+            try {
+                const background = parseBackground(body.proposal, proposal, roster, entries);
+                if (background.length) {
+                    check(body.rosterVersion === digest(JSON.stringify(roster)), '记录期间核心角色名单有变动');
+                    const combined = { ...proposal, background };
+                    applyProposal(basis.state, combined, full.tip.slice(0, 12));
+                    turn.proposal = combined;
+                }
+            } catch (error) {
+                turn.backgroundIssue = error.message;
+            }
         }
     } catch (error) {
         turn.issues = [{ detail: error.message, ...(error.evidence ? { evidence: error.evidence } : {}) }];

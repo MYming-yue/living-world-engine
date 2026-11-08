@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { digest, makeLedger, recordTurn, recordingBasis, viewLedger } from './history.mjs';
-import { check, text } from './world.mjs';
+import { check, coreRoster, text } from './world.mjs';
 
 export const info = {
     id: 'living-world-engine',
@@ -224,6 +224,14 @@ export async function init(router) {
         if (ledger) await writeJson(dir, file + '.' + ledger.epoch + '.backup', ledger);
         await writeJson(dir, file, created);
         return inspect(created, body);
+    }));
+    router.post('/core', endpoint(async ({ body, ledger, dir, file }) => {
+        const view = inspect(ledger, body);
+        check(view.state && view.epoch === body.epoch, '世界起点已变化，请刷新后再保存核心角色');
+        check(view.rosterVersion === body.rosterVersion, '核心角色名单已更新，请刷新后再保存');
+        ledger.core = coreRoster(body.core, ledger.initial);
+        await writeJson(dir, file, ledger);
+        return inspect(ledger, body);
     }));
     router.post('/record', endpoint(async ({ body, ledger, dir, file }) => {
         if (recordTurn(ledger, body)) await writeJson(dir, file, ledger);
