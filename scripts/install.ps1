@@ -38,13 +38,16 @@ function Install-Part([string]$Name, [string]$Destination, [string[]]$Files) {
     }
     New-Item -Path $Destination -ItemType Directory -Force | Out-Null
     foreach ($fileName in $Files) {
-        Copy-Item -LiteralPath (Join-Path $sourceRoot "$Name\$fileName") -Destination (Join-Path $Destination $fileName) -Force
+        $source = Join-Path (Join-Path $sourceRoot $Name) $fileName
+        $target = Join-Path $Destination $fileName
+        New-Item -Path (Split-Path -Parent $target) -ItemType Directory -Force | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Force
     }
     [System.IO.File]::WriteAllText($stamp, 'living-world-engine')
 }
 
 Install-Part 'server' $serverTarget @('index.mjs', 'world.mjs', 'history.mjs')
-Install-Part 'extension' $extensionTarget @('manifest.json', 'index.js', 'recorder.js', 'style.css')
+Install-Part '.' $extensionTarget @('extension\index.js', 'extension\recorder.js', 'extension\style.css', 'manifest.json')
 if ($EnableServerPlugin -and $updatedConfig) {
     [System.IO.File]::WriteAllText($configPath, $updatedConfig, [System.Text.UTF8Encoding]::new($false))
 }

@@ -20,6 +20,23 @@ const instructions = [
     '只记录相关事实。使用已知角色、路线和物品的准确名称。角色的计划、误解和传闻不能变成客观事件。',
 ].join('\n');
 
+export const customRecorderProfile = '__lwe_custom_recorder__';
+
+export async function recorderRequest(ctx, path, body, timeout = 15_000) {
+    const response = await fetch('/api/plugins/living-world-engine/' + path, {
+        method: body === undefined ? 'GET' : 'POST',
+        headers: ctx.getRequestHeaders(),
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(timeout),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload) {
+        if (response.status === 404) throw new Error('请重启酒馆以加载自定义记录员接口。');
+        throw new Error(payload?.error ?? '无法访问记录员的自定义接口。');
+    }
+    return payload;
+}
+
 export function parseRecorderReply(reply) {
     if (typeof reply !== 'string') throw new Error('状态记录员返回了空响应');
     const content = reply.trim();
@@ -43,7 +60,10 @@ export async function extractTurn(ctx, profile, state, basis, entries) {
         { role: 'user', content: prompt },
     ];
     let response;
-    if (profile) {
+    if (profile === customRecorderProfile) {
+        const result = await recorderRequest(ctx, 'recorder-completion', { messages }, 65_000);
+        response = result.content;
+    } else if (profile) {
         const result = await ctx.ConnectionManagerRequestService.sendRequest(profile, messages, 3000, {
             stream: false, includePreset: false, includeInstruct: false,
             signal: AbortSignal.timeout(60_000),

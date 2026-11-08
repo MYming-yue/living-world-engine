@@ -1,4 +1,4 @@
-import { extractTurn } from './recorder.js';
+import { customRecorderProfile, extractTurn, recorderRequest } from './recorder.js';
 
 const id = 'living-world-engine';
 const endpoint = '/api/plugins/' + id;
@@ -350,6 +350,7 @@ function updateProfiles() {
     const ctx = context();
     const select = panel.querySelector('[data-act="profile"]');
     select.replaceChildren(new Option('使用当前酒馆连接', ''));
+    select.add(new Option('自定义接口', customRecorderProfile));
     for (const profile of ctx.extensionSettings.connectionManager?.profiles ?? []) {
         if (profile.id) select.add(new Option(profile.name || profile.id, profile.id));
     }
@@ -358,6 +359,105 @@ function updateProfiles() {
         select.add(new Option('已选连接不可用，请重新选择', value));
     }
     select.value = value;
+    void showRecorderConnection();
+}
+
+function showSavedRecorderConnection(form, connection) {
+    form.dataset.loaded = 'true';
+    form.dataset.savedUrl = connection.url;
+    form.dataset.savedModel = connection.model;
+    form.elements['lwe-recorder-url'].value = connection.url;
+    form.elements['lwe-recorder-model'].value = connection.model;
+    form.elements['lwe-recorder-key'].value = '';
+    form.elements['lwe-recorder-clear-key'].checked = false;
+    form.querySelector('[data-part="clear-recorder-key"]').hidden = !connection.hasKey;
+    form.querySelector('[data-view="recorder-status"]').textContent = connection.url
+        ? (connection.hasKey ? '接口和密钥已保存。' : '接口已保存，未设置密钥。')
+        : '填写地址和模型 ID 后保存。';
+    showRecorderTestResult(form, connection.test);
+    updateRecorderTestButton(form);
+}
+
+function showRecorderTestResult(form, test) {
+    const view = form.querySelector('[data-view="recorder-test"]');
+    view.dataset.result = test ? (test.ok ? 'ok' : 'failed') : '';
+    view.textContent = test
+        ? (test.ok ? '连接成功' : '连接失败') + ' · ' + new Date(test.checkedAt).toLocaleString()
+            + (test.detail ? '。' + test.detail : '')
+        : '尚未测试连接。';
+}
+
+function updateRecorderTestButton(form) {
+    const dirty = form.elements['lwe-recorder-url'].value.trim() !== (form.dataset.savedUrl ?? '')
+        || form.elements['lwe-recorder-model'].value.trim() !== (form.dataset.savedModel ?? '')
+        || Boolean(form.elements['lwe-recorder-key'].value.trim())
+        || form.elements['lwe-recorder-clear-key'].checked;
+    const button = form.querySelector('[data-act="test-recorder"]');
+    button.disabled = dirty || !form.dataset.savedUrl || !form.dataset.savedModel;
+    const view = form.querySelector('[data-view="recorder-test"]');
+    view.hidden = dirty;
+    form.querySelector('[data-view="recorder-unsaved"]').hidden = !dirty;
+}
+
+async function testRecorderConnection(event) {
+    const form = event.currentTarget.form;
+    const fields = form.querySelector('fieldset');
+    const view = form.querySelector('[data-view="recorder-test"]');
+    fields.disabled = true;
+    view.dataset.result = '';
+    view.textContent = '正在测试连接…';
+    try {
+        const connection = await recorderRequest(context(), 'recorder-test', {}, 65_000);
+        showSavedRecorderConnection(form, connection);
+    } catch (error) {
+        view.dataset.result = 'failed';
+        view.textContent = '测试失败。' + error.message;
+    } finally {
+        fields.disabled = false;
+    }
+}
+
+async function showRecorderConnection() {
+    const form = panel.querySelector('[data-part="recorder-connection"]');
+    form.hidden = settings().profile !== customRecorderProfile;
+    const fields = form.querySelector('fieldset');
+    if (form.hidden || form.dataset.loaded || fields.disabled) return;
+    const status = form.querySelector('[data-view="recorder-status"]');
+    fields.disabled = true;
+    status.textContent = '正在读取记录员接口…';
+    try {
+        showSavedRecorderConnection(form, await recorderRequest(context(), 'recorder-connection'));
+    } catch (error) {
+        status.textContent = error.message;
+    } finally {
+        fields.disabled = false;
+    }
+}
+
+async function saveRecorderConnection(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const fields = form.querySelector('fieldset');
+    const status = form.querySelector('[data-view="recorder-status"]');
+    const key = form.elements['lwe-recorder-key'].value.trim();
+    const clearKey = form.elements['lwe-recorder-clear-key'].checked;
+    if (key && clearKey) {
+        status.textContent = '请选择填写新密钥或清除密钥。';
+        return;
+    }
+    fields.disabled = true;
+    status.textContent = '正在保存记录员接口…';
+    try {
+        showSavedRecorderConnection(form, await recorderRequest(context(), 'recorder-connection', {
+            url: form.elements['lwe-recorder-url'].value,
+            model: form.elements['lwe-recorder-model'].value,
+            ...(clearKey || key ? { apiKey: clearKey ? null : key } : {}),
+        }));
+    } catch (error) {
+        status.textContent = error.message;
+    } finally {
+        fields.disabled = false;
+    }
 }
 
 function mount() {
@@ -374,6 +474,18 @@ function mount() {
         '<button class="menu_button" type="button" data-act="refresh">刷新查看</button>',
         '<button class="menu_button" type="button" data-act="retry" hidden>补记当前回复</button></div>',
         '<label>状态记录员的连接 <select class="text_pole" data-act="profile"></select></label>',
+        '<form data-part="recorder-connection" hidden><fieldset class="lwe-stack">',
+        '<label>API 地址<input name="lwe-recorder-url" class="text_pole" type="url" placeholder="https://api.example.com/v1" required></label>',
+        '<label>API 密钥<input name="lwe-recorder-key" class="text_pole" type="password" autocomplete="new-password"></label>',
+        '<small>同一地址留空会沿用已保存的密钥。换地址后请填写该接口的密钥。</small>',
+        '<label class="lwe-inline-check" data-part="clear-recorder-key" hidden><input type="checkbox" name="lwe-recorder-clear-key"> 清除已保存的密钥</label>',
+        '<label>模型 ID<input name="lwe-recorder-model" class="text_pole" type="text" required></label>',
+        '<div class="lwe-row lwe-recorder-actions"><button class="menu_button" type="submit">保存记录员接口</button>',
+        '<button class="menu_button" type="button" data-act="test-recorder" disabled>测试连接</button></div>',
+        '<small data-view="recorder-status" role="status" aria-live="polite"></small>',
+        '<small data-view="recorder-test" role="status" aria-live="polite">尚未测试连接。</small>',
+        '<small data-view="recorder-unsaved" hidden>保存当前修改后即可测试连接。</small>',
+        '</fieldset></form>',
         '<small>建立世界起点后，每轮正文显示后会额外调用一次状态记录员。</small>',
         '<details data-part="seed" hidden><summary>设置世界起点</summary><div class="lwe-stack">',
         '<small>当前已有正文作为起点之前的历史。填入此刻的事实，接下来的回复会更新它们。</small>',
@@ -404,7 +516,12 @@ function mount() {
         const ctx = context();
         settings(ctx).profile = event.target.value;
         ctx.saveSettingsDebounced();
+        void showRecorderConnection();
     });
+    const recorderForm = panel.querySelector('[data-part="recorder-connection"]');
+    recorderForm.addEventListener('submit', saveRecorderConnection);
+    recorderForm.addEventListener('input', () => updateRecorderTestButton(recorderForm));
+    recorderForm.querySelector('[data-act="test-recorder"]').addEventListener('click', testRecorderConnection);
     panel.querySelector('[data-act="example"]').addEventListener('click', example);
     panel.querySelector('[data-act="refresh"]').addEventListener('click', () => void refresh());
     panel.querySelector('[data-act="retry"]').addEventListener('click', () => {
