@@ -45,20 +45,29 @@ SillyTavern 的世界状态扩展。编导根据世界事实与玩家行动写�
 
 ## 手机酒馆安装
 
-手机独立运行酒馆时，先在 Termux 装服务端插件，再在酒馆页面安装界面扩展。两个步骤使用同一个仓库的默认分支。
+需要 SillyTavern 1.19.0 或更新版本。手机独立运行酒馆时，在 Termux 安装服务端插件；如果手机浏览器访问的是电脑或云端的酒馆，则在运行酒馆的那台机器上安装。界面扩展在手机浏览器里用酒馆的安装按钮添加。
 
-1. 在 Termux 中进入酒馆目录，把下方示例地址替换成实际的发布仓库地址。
+1. 目前是私有测试版。在运行酒馆的机器上配置 GitHub 登录，让酒馆能读取仓库。Termux 上可运行下列命令，按提示用有仓库访问权限的账号登录。`git ls-remote` 能列出 `refs/heads/main` 就可以继续。
+
+   ```sh
+   pkg install git gh
+   gh auth login --hostname github.com --git-protocol https --web
+   gh auth setup-git
+   git ls-remote https://github.com/MYming-yue/living-world-engine.git refs/heads/main
+   ```
+
+2. 在酒馆目录安装服务端插件。下方路径以 Termux 的常见安装位置为例。
 
    ```sh
    cd ~/SillyTavern
-   node plugins.js install https://github.com/你的账号/living-world-engine.git
+   node plugins.js install https://github.com/MYming-yue/living-world-engine.git
    ```
 
-2. 打开酒馆目录中的 `config.yaml`，找到 `enableServerPlugins`，改为 `enableServerPlugins: true`。重启手机上的酒馆。用浏览器访问当前酒馆地址下的 `/api/plugins/living-world-engine/health`，看到 `"ok": true` 即可继续。
-3. 在手机酒馆的「扩展程序 → 安装扩展程序」粘贴同一个仓库地址。安装后刷新页面，打开「Living World Engine · 世界引擎」。
-4. 填好手机酒馆的主连接，在世界引擎面板配置记录员，点「测试连接」，然后在测试聊天中建立世界起点。手机独立实例有自己的存档和连接配置。若 Gemini 反代运行在电脑上，主连接继续使用手机原来可以访问的反代地址。
+3. 在酒馆的 `config.yaml` 中设为 `enableServerPlugins: true`，然后重启酒馆。用浏览器访问当前酒馆地址下的 `/api/plugins/living-world-engine/health`，看到 `"ok": true` 即可继续。如果曾手动把 `git.backend` 设为 `builtin`，改为 `system`，这样界面安装扩展时可以使用刚配置的 Git 凭据。
+4. 在手机酒馆的「扩展程序 → 安装扩展程序」粘贴同一个仓库地址。安装后刷新页面，打开「Living World Engine · 世界引擎」。
+5. 填好手机酒馆的主连接，在世界引擎面板配置记录员，点「测试连接」，然后在测试聊天中建立世界起点。手机独立实例有自己的存档和连接配置。若 Gemini 反代运行在电脑上，主连接继续使用手机原来可以访问的反代地址。
 
-仓库根目录的 `manifest.json` 供酒馆安装界面扩展，`package.json` 的 `main` 供酒馆加载服务端插件。私有仓库要求手机上的 Git 有读取权限，可先用 `git ls-remote <仓库地址>` 检查。
+仓库根目录的 `manifest.json` 供酒馆安装界面扩展，`package.json` 的 `main` 供酒馆加载服务端插件。两步都从同一个仓库的默认分支安装。
 
 ## 电脑本机安装与更新
 
